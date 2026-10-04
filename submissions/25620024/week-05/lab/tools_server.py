@@ -1,6 +1,7 @@
 """Week 05 lab, step 2: the week-01 tools moved into an MCP server.
 
-calculator and read_file are copied from week-01/first_agent.py unchanged.
+calculator, read_file, and (step 7) write_note are copied from
+week-01/first_agent.py unchanged.
 The hand-written TOOLS schema list is gone: @mcp.tool() builds each tool's
 description from the docstring and its inputSchema from the type hints.
 
@@ -52,6 +53,24 @@ def read_file(path: str) -> str:
         return f"denied: no such file - {path}"
     with open(full, encoding="utf-8") as f:
         return f.read()[:4000]
+
+
+# ---- tool 3: write_note (step 7; same sandbox as read_file; append only) ----
+@mcp.tool()
+def write_note(path: str, text: str) -> str:
+    """Append one line of text to a note file in the working directory.
+    Appends only - it never overwrites or deletes existing content, and it
+    creates the file if it does not exist. Use it when the user asks for a
+    result to be recorded or saved; do not use it to think out loud.
+    Returns the file's new line count."""
+    full = os.path.abspath(path)
+    if not full.startswith(os.getcwd()):
+        return "denied: path outside the working directory"
+    with open(full, "a", encoding="utf-8") as f:
+        f.write(text.rstrip("\n") + "\n")
+    with open(full, encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    return f"appended to {os.path.relpath(full)}; the file now has {len(lines)} line(s)"
 
 
 if __name__ == "__main__":
