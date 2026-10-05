@@ -121,12 +121,12 @@
 
 | 항목 | FIPA-ACL (4주차) | MCP 시장 (5주차) |
 |---|---|---|
-| 보내는 사람이 누구이고, 누가 그렇다고 말하나 | 규격상 `sender` 필드에 보내는 쪽이 스스로 적고, 받는 쪽은 그것을 검증할 수단이 없다. 4주차 코드에는 sender 필드조차 없었고, 오케스트레이터(`negotiate.py`)가 차례를 번갈아 정하는 것으로 대신했다 | bearer 토큰. 러너가 발급하고 server가 매 요청마다 확인한다. 도구 인자에는 역할을 적는 칸이 없다 |
-| 화행(act)은 어디에 있나 | `performative` 필드 또는 태그(free 조건은 문장 속) | 도구 이름 자체(`propose`, `accept_proposal` ...). 무엇을 했는지 해석할 필요가 없다 |
-| 내용(content)은 무엇인가 | 자연어 또는 JSON `content.price`. 4주차 free/tagged는 reader LLM이 가격을 뽑았다 | 도구 인자 `price`(정수, inputSchema로 형식 고정). 협상 상태는 `get_negotiation`의 구조화된 결과 |
-| 한도는 누가 강제하나 | 아무도 강제하지 않는다. 4주차에 추가한 브로커가 accept 가격을 코드로 사후 검증한 것이 유일했다 | prompt 조건은 모델만 지킨다. server 조건은 server가 토큰의 한도로 `propose`/`accept_proposal`을 실행 전에 거절한다 |
-| 밖에서 무엇을 확인할 수 있나 | 메시지 텍스트. 보낸 이의 믿음이나 의도(sincerity)는 확인할 수 없다 | 어떤 토큰으로 어떤 도구를 어떤 인자로 불렀는지, 무엇이 거절되었는지가 server 기록에 전부 남는다. 의도는 여전히 알 수 없다 |
-| 나타난 실패 | 질문을 refuse로 오독(free), 역제안 가격 미갱신으로 인한 가짜 위반(tagged), 팽팽한 시나리오의 교착(structured) | 주입을 믿고 한도 밖으로 수락/제안(prompt_inject 위반 2건), 주입 없는 seller의 한도 착각(850 < 900), 좁은 구간에서의 미합의 1건. 형식 오류나 읽기 오류는 한 번도 없었다 |
+| 보내는 사람이 누구이고, 누가 그렇다고 말하나 | 규격상 `sender` 필드에 보내는 쪽이 스스로 적음<br>받는 쪽은 이를 검증할 수단이 없음<br>4주차 코드에는 sender 필드조차 없었고, 오케스트레이터(`negotiate.py`)가 차례를 번갈아 정하는 것으로 대신함 | bearer 토큰으로 정해짐<br>러너가 발급하고, server가 매 요청마다 확인함<br>도구 인자에는 역할을 적는 칸이 없음 |
+| 화행(act)은 어디에 있나 | `performative` 필드 또는 태그에 있음(free 조건은 문장 속) | 도구 이름 자체(`propose`, `accept_proposal` ...)<br>무엇을 했는지 해석할 필요가 없음 |
+| 내용(content)은 무엇인가 | 자연어 또는 JSON `content.price`<br>4주차 free/tagged는 reader LLM이 가격을 뽑아냄 | 도구 인자 `price`(정수, inputSchema로 형식 고정)<br>협상 상태는 `get_negotiation`의 구조화된 결과로 전달됨 |
+| 한도는 누가 강제하나 | 아무도 강제하지 않음<br>4주차에 추가한 브로커가 accept 가격을 코드로 사후 검증한 것이 유일함 | prompt 조건: 모델만 지킴<br>server 조건: server가 토큰의 한도로 `propose`/`accept_proposal`을 실행 전에 거절함 |
+| 밖에서 무엇을 확인할 수 있나 | 메시지 텍스트뿐임<br>보낸 이의 믿음이나 의도(sincerity)는 확인할 수 없음 | 어떤 토큰으로 어떤 도구를 어떤 인자로 불렀는지, 무엇이 거절되었는지가 server 기록에 전부 남음<br>의도는 여전히 알 수 없음 |
+| 나타난 실패 | 질문을 refuse로 오독함(free)<br>역제안 가격 미갱신으로 가짜 위반 발생(tagged)<br>팽팽한 시나리오에서 교착(structured) | 주입을 믿고 한도 밖으로 수락/제안함(prompt_inject 위반 2건)<br>주입을 받지 않은 seller가 한도를 착각함(850 < 900)<br>좁은 구간에서 미합의 1건<br>형식 오류나 읽기 오류는 한 번도 없었음 |
 
 ## 4. 해석
 
