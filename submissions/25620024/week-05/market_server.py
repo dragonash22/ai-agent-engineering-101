@@ -27,6 +27,7 @@ from mcp.server import MCPServer
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.server.mcpserver.exceptions import ToolError
 from starlette.responses import JSONResponse
 
 PORT = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 8100
@@ -55,8 +56,10 @@ mcp = MCPServer("negotiation-market", token_verifier=MarketTokenVerifier(),
                 auth=AuthSettings(issuer_url=BASE, resource_server_url=f"{BASE}/mcp"))
 
 
-class Refused(Exception):
-    """A move the server will not execute. Raised inside a tool -> isError=True result."""
+class Refused(ToolError):
+    """A move the server will not execute. Raised inside a tool -> isError=True result.
+    Must be a ToolError: the SDK masks any other exception's text as
+    'Error executing tool ...', and the reason is the only signal an agent gets."""
 
 
 def _caller(negotiation_id: str):
