@@ -112,6 +112,7 @@ def _move(negotiation_id, tool, price=None):
 
     # the token-carried limit: only present in server conditions
     checked = price if tool == "propose" else offer if tool == "accept_proposal" else None
+    event["price"] = checked   # the price this move would commit to, for the runner's audit
     if limit is not None and checked is not None:
         if role == "buyer" and checked > limit:
             refuse(f"{checked} is above your budget limit of {limit}, "
