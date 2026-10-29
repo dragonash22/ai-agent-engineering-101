@@ -1,15 +1,15 @@
-[choose] Kit Shop http://127.0.0.1:52311: the only shop left after my memory filter
-card: Kit Shop | JSONRPC http://127.0.0.1:52311/ | buying lamp with budget 120
+[filter] skip Kit Shop: my memory: no answer in 2 of my last 2 trades, latest 0 min ago
+[choose] Kit Shop http://127.0.0.1:58619: the only shop left after my memory filter
+card: Kit Shop | JSONRPC http://127.0.0.1:58619/ | buying lamp with budget 120
 -> I want to buy a lamp
 <- TASK_STATE_INPUT_REQUIRED | lamp: asking 130. Send your offer as a number.
-   harness: {"action": "offer", "price": 100} (ask 130, budget 120)
-   GUARD first offer 100 > 70% of ask 130: lowered to 91
--> 91  (taskId f93d55ec)
-<- TASK_STATE_INPUT_REQUIRED | 91 is too low. Counteroffer: 110.
-   harness: {"action": "offer", "price": 100} (ask 110, budget 120)
--> 100  (taskId f93d55ec)
-<- TASK_STATE_COMPLETED | Deal: lamp at 100.
-[receipt] {'item': 'lamp', 'sig_seller': 'WtllUYVJlspyuInD5S1e7GWBKOW+sR7hGUAvwo5iXr5uRIVK4wmEG3F+xTLrvQIxWINyV2WpHeDRgPyhpq3wAg==', 'price': 100.0, 'task': 'f93d55ec-579d-46bb-b7cb-db13908d1558', 'shop': 'Kit Shop'}  agreed 100: matches the deal
-[review] 5 stars: The lamp was listed at 130, then reduced to 110. I paid 100 and received a signed receipt for the agreed price.
-result: deal, 28 s
-{"shop": "http://127.0.0.1:52311", "receipt": {"item": "lamp", "sig_seller": "WtllUYVJlspyuInD5S1e7GWBKOW+sR7hGUAvwo5iXr5uRIVK4wmEG3F+xTLrvQIxWINyV2WpHeDRgPyhpq3wAg==", "price": 100.0, "task": "f93d55ec-579d-46bb-b7cb-db13908d1558", "shop": "Kit Shop"}, "stars": 5, "review": "The lamp was listed at 130, then reduced to 110. I paid 100 and received a signed receipt for the agreed price."}
+[harness] listed models failed; trying OpenRouter's current free models ['xingchen-agi/xing4.0-29b-a4b:free', 'thinkingmachines/inkling-small:free', 'thinkingmachines/inkling:free']
+   harness error (all OpenRouter models failed: google/gemma-4-26b-a4b-it:free: HTTP 429; nvidia/nemotron-3-ultra-550b-a55b:free: HTTP 429; recursive/flint-v1.0:free: HTTP 429; nvidia/nemotron-3.5-lightning:free: HTTP 429; google/gemma-4-31b-it:free: HTTP 429; google/gemma-4-26b-a4b-it:free: HTTP 429)
+   harness: {"action": "walk_away", "price": 0} (ask 130, budget 120)
+-> CancelTask (walked away) <- TASK_STATE_CANCELED
+buyer error: TypeError: 'dict' object is not callable
+[harness] listed models failed; trying OpenRouter's current free models ['xingchen-agi/xing4.0-29b-a4b:free', 'thinkingmachines/inkling-small:free', 'thinkingmachines/inkling:free']
+[review] harness text not used (all OpenRouter models failed: google/gemma-4-26b-a4b-it:free: HTTP 429; nvidia/nemotron-3-ultra-550b-a55b:free: HTTP 429; recursive/flint-v1.0:free: HTTP 429; nvidia/nemotron-3.5-lightning:free: HTTP 429; google/gemma-4-31b-it:free: HTTP 429; google/gemma-4-26b-a4b-it:free: HTTP 429); writing it from the facts
+[review] 1 stars: The shop's card or endpoint did not answer (no answer (TypeError)). No trade happened.
+result: no answer, 17 s
+{"shop": "http://127.0.0.1:58619", "receipt": null, "stars": 1, "review": "The shop's card or endpoint did not answer (no answer (TypeError)). No trade happened."}

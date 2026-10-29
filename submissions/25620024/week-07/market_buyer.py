@@ -120,7 +120,8 @@ def my_history(memory, name):
 # A shop that did not answer is skipped only while that is recent: at least NO_ANSWER_MIN of my last
 # NO_ANSWER_LAST trades with it got no answer, the latest one within NO_ANSWER_HOURS. Counting every
 # no-answer ever (the first version) blocked ggari-shop for good after two timeouts in 1,866 deals.
-# Cheating (an inflated receipt, a raised ask, an absurd price) still blocks for good.
+# Cheating is graded (buyer_memory.sanction): an inflated receipt blocks for good, a raised ask pauses the
+# shop and blocks it only the second time. Before this, one raised ask blocked ggari-shop for good again.
 NO_ANSWER_LAST, NO_ANSWER_MIN, NO_ANSWER_HOURS = 5, 2, 6
 
 
@@ -129,8 +130,9 @@ def blocked(prof, name, now=None):
     p = prof.get(name)
     if not p:
         return None
-    if p["cheats"]:
-        return f"my memory: {p['cheats'][0]}"
+    level, why = buyer_memory.sanction(p, now)
+    if level:
+        return f"my memory ({level}): {why}"
     recent = p["recent"][-NO_ANSWER_LAST:]
     silent = [r for r in recent if r[1] == "no answer"]
     now = now or time.time()
@@ -172,7 +174,8 @@ def score(shop, prof):
     s = 3.0 if not revs else sum(r.get("stars", 0) for r in revs) / len(revs)
     s -= sum(1 for r in revs if BAD_WORDS.search(r.get("review", "")))
     p = prof.get(shop["name"]) or buyer_memory._empty()
-    return s + 0.2 * p["deals"] + 0.5 * p["signed"] - 0.5 * (p["deals"] - p["signed"]) - 2 * len(p["cheats"])
+    # recent defect rate, not offenses ever (Amazon's order defect rate): 10% defects costs 2 points
+    return s + 0.2 * p["deals"] + 0.5 * p["signed"] - 0.5 * (p["deals"] - p["signed"]) - 20 * buyer_memory.defect_rate(p)
 
 
 def unsigned_only(prof, name):
@@ -209,9 +212,11 @@ def choose(shops, item, budget, prof):
 
 # --- trading
 
-def negotiate(card_url, item, budget, started, ratio=None):
+def negotiate(card_url, item, budget, started, ratio=None, low=None):
     """Week-06 buyer loop with two more guards. Returns (task, asks, offers): every ask the shop made and
-    every price we sent, oldest first."""
+    every price we sent, oldest first. low is the lowest price I agreed for this item lately at any shop
+    (the market floor): an ask at or below it is taken at once, and my first offer is that price, not a
+    share of the ask. A shop whose ask stays above my budget and does not move is left after two asks."""
     card = httpx.get(card_url.rstrip("/") + "/.well-known/agent-card.json", headers=HEADERS, timeout=10).json()
     url = next(i for i in card["supportedInterfaces"] if i.get("protocolBinding") == "JSONRPC")["url"]
     log(f"card: {card['name']} | JSONRPC {url} | buying {item} with budget {budget}")
@@ -234,7 +239,13 @@ def negotiate(card_url, item, budget, started, ratio=None):
             notes.append(f'replied without a price: "{status_text(task)[:60]}"')
             break
         asks.append(ask_price)
-        if time.time() - started > TIME_LIMIT:
+        if low and ask_price <= low and ask_price <= budget:
+            log(f"   ask {ask_price} is at the market low {low}: taking it, no haggling")
+            action, price = "accept", ask_price
+        elif len(asks) >= 2 and ask_price > budget and ask_price >= asks[-2]:
+            log(f"   ask {ask_price} is above budget {budget} and did not move: walking away")
+            action, price = "walk_away", 0
+        elif time.time() - started > TIME_LIMIT:
             action, price = ("accept", ask_price) if ask_price <= budget else ("walk_away", 0)
             log(f"   time limit: {action}")
         else:
@@ -245,9 +256,15 @@ def negotiate(card_url, item, budget, started, ratio=None):
         if action == "accept" and ask_price > budget:
             log(f"   GUARD accept at {ask_price} > budget {budget}: offering {budget} instead")
             action, price = "offer", budget
+        if action == "accept" and last_offer is None and low and low < ask_price:
+            action = "offer"             # never take a first ask above the market low without trying it
         if action == "offer":
             # week-07 guards: do not give the budget away early
-            if last_offer is None and price > first_max * ask_price:
+            if last_offer is None and low and low < ask_price:
+                if price != low:
+                    log(f"   GUARD first offer {price}: offering the market low {low} instead")
+                price = low
+            elif last_offer is None and price > first_max * ask_price:
                 cap = int(first_max * ask_price)
                 log(f"   GUARD first offer {price} > {first_max:.0%} of ask {ask_price}: lowered to {cap}")
                 price = cap
@@ -403,14 +420,16 @@ def main():
     started = time.time()
 
     shops = json.loads(Path(a.shops).read_text(encoding="utf-8"))
-    prof = buyer_memory.load()       # compact per-shop profiles, updated with only the new memory lines
+    state = buyer_memory.load(full=True)   # compact per-shop profiles, updated with only the new memory lines
+    prof = state["profiles"]
     shop, reason = choose(shops, a.item, a.budget, prof)
     log(f"[choose] {shop['name']} {shop['url']}: {reason}")
 
     task, asks, offers, texts, notes, rec, problem = None, [], [], [], [], None, None
     try:
         task, asks, offers, texts, notes = negotiate(shop["url"], a.item, a.budget, started,
-                                                     buyer_memory.settle_ratio(prof.get(shop["name"])))
+                                                     buyer_memory.settle_ratio(prof.get(shop["name"])),
+                                                     buyer_memory.market_low(state, a.item))
         outcome = "deal" if state(task) == "TASK_STATE_COMPLETED" else "no deal"
     except Exception as e:
         log(f"buyer error: {type(e).__name__}: {e}")
