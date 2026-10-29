@@ -47,6 +47,7 @@ import httpx
 from buyer import HEADERS, LOW_OFFERS_BEFORE_TAKING, MAX_OFFERS, TIME_LIMIT, decide, log, rpc, send, \
     state, status_text
 from harness import ask
+import buyer_memory
 
 MEMORY = Path(os.environ.get("MARKET_BUYER_MEMORY", Path(__file__).parent / "memory.jsonl"))   # tests use another file
 FIRST_OFFER_MAX = 0.70        # first offer at most 70% of the opening ask
@@ -123,22 +124,24 @@ def my_history(memory, name):
 NO_ANSWER_LAST, NO_ANSWER_MIN, NO_ANSWER_HOURS = 5, 2, 6
 
 
-def blocked(memory, name, now=None):
-    rows, _, flags = my_history(memory, name)
-    cheats = [f for f in flags if f.startswith(("receipt above", "receipt for", "misbehaved"))]
-    if cheats:
-        return f"my memory: {cheats[0]}"
-    recent = sorted(rows, key=lambda r: r.get("ts") or 0)[-NO_ANSWER_LAST:]
-    silent = [r for r in recent if r.get("outcome") == "no answer"]
+def blocked(prof, name, now=None):
+    """Read from the shop's profile (buyer_memory.py), not from every line of memory.jsonl."""
+    p = prof.get(name)
+    if not p:
+        return None
+    if p["cheats"]:
+        return f"my memory: {p['cheats'][0]}"
+    recent = p["recent"][-NO_ANSWER_LAST:]
+    silent = [r for r in recent if r[1] == "no answer"]
     now = now or time.time()
-    if len(silent) >= NO_ANSWER_MIN and now - (silent[-1].get("ts") or 0) < NO_ANSWER_HOURS * 3600:
-        return f"my memory: no answer in {len(silent)} of my last {len(recent)} trades, latest {int((now - silent[-1]['ts']) / 60)} min ago"
+    if len(silent) >= NO_ANSWER_MIN and now - (silent[-1][0] or 0) < NO_ANSWER_HOURS * 3600:
+        return f"my memory: no answer in {len(silent)} of my last {len(recent)} trades, latest {int((now - silent[-1][0]) / 60)} min ago"
     return None
 
 
 # --- reviews and choosing
 
-def summary(i, shop, memory):
+def summary(i, shop, prof):
     revs = shop.get("reviews") or []
     if revs:
         avg = sum(r.get("stars", 0) for r in revs) / len(revs)
@@ -147,50 +150,51 @@ def summary(i, shop, memory):
         rev += f'; newest: "{revs[0].get("review", "")[:80]}"'
     else:
         rev = "no reviews yet"
-    rows, deals, flags = my_history(memory, shop["name"])
-    if rows:
-        paid = [d["agreed"] / d["budget"] for d in deals if d.get("budget") and d.get("agreed")]
-        mine = f"my trades: {len(rows)}, deals {len(deals)}"
-        if deals:
-            mine += f", signed receipts {sum(bool(d.get('signed')) for d in deals)}/{len(deals)}"
-        if paid:
-            mine += f", paid {sum(paid) / len(paid):.0%} of budget on average"
-        if flags:
-            mine += f", problems: {'; '.join(flags[-2:])}"
+    p = prof.get(shop["name"])
+    if p and p["trades"]:
+        mine = f"my trades: {p['trades']}, deals {p['deals']}"
+        if p["deals"]:
+            mine += f", signed receipts {p['signed']}/{p['deals']}"
+        if p["paid"][1]:
+            mine += f", paid {p['paid'][0] / p['paid'][1]:.0%} of budget on average"
+        r = buyer_memory.settle_ratio(p)
+        if r is not None:
+            mine += f", usually settles at {r:.0%} of its first ask"
+        if p["problems"]:
+            mine += f", problems: {'; '.join(p['problems'][-2:])}"
     else:
         mine = "never traded with it"
     return f"{i}. {shop['name']}: {rev}. {mine}."
 
 
-def score(shop, memory):
+def score(shop, prof):
     revs = shop.get("reviews") or []
     s = 3.0 if not revs else sum(r.get("stars", 0) for r in revs) / len(revs)
     s -= sum(1 for r in revs if BAD_WORDS.search(r.get("review", "")))
-    _, deals, flags = my_history(memory, shop["name"])
-    signed = sum(bool(d.get("signed")) for d in deals)
-    return s + 0.2 * len(deals) + 0.5 * signed - 0.5 * (len(deals) - signed) - len(flags)
+    p = prof.get(shop["name"]) or buyer_memory._empty()
+    return s + 0.2 * p["deals"] + 0.5 * p["signed"] - 0.5 * (p["deals"] - p["signed"]) - 2 * len(p["cheats"])
 
 
-def unsigned_only(memory, name):
+def unsigned_only(prof, name):
     """Two or more deals with this shop and not one signed receipt: in Round 2 its deals do not count."""
-    _, deals, _ = my_history(memory, name)
-    return len(deals) >= 2 and not any(d.get("signed") for d in deals)
+    p = prof.get(name)
+    return bool(p) and p["deals"] >= 2 and p["signed"] == 0
 
 
-def choose(shops, item, budget, memory):
+def choose(shops, item, budget, prof):
     for s in shops:
-        why = blocked(memory, s["name"])
+        why = blocked(prof, s["name"])
         if why:
             log(f"[filter] skip {s['name']}: {why}")
-    allowed = [s for s in shops if not blocked(memory, s["name"])] or shops
+    allowed = [s for s in shops if not blocked(prof, s["name"])] or shops
     # Round 2 counts only signed receipts: drop shops that never signed for me, if others are left
-    signing = [s for s in allowed if not unsigned_only(memory, s["name"])]
+    signing = [s for s in allowed if not unsigned_only(prof, s["name"])]
     if signing and len(signing) < len(allowed):
         log(f"[filter] skip unsigned-only shops: {', '.join(s['name'] for s in allowed if s not in signing)}")
         allowed = signing
     if len(allowed) == 1:
         return allowed[0], "the only shop left after my memory filter"
-    lines = "\n".join(summary(i + 1, s, memory) for i, s in enumerate(allowed))
+    lines = "\n".join(summary(i + 1, s, prof) for i, s in enumerate(allowed))
     log("[shops]\n" + lines)
     try:
         answer = ask(CHOOSE_PROMPT.format(item=item, budget=budget, lines=lines))
@@ -199,13 +203,13 @@ def choose(shops, item, budget, memory):
             raise ValueError(f"pick {pick} out of range")
         return allowed[pick - 1], str(answer.get("reason", "")).strip() or "harness pick"
     except Exception as e:
-        best = max(allowed, key=lambda s: score(s, memory))
+        best = max(allowed, key=lambda s: score(s, prof))
         return best, f"harness failed ({e}); best score by code"
 
 
 # --- trading
 
-def negotiate(card_url, item, budget, started):
+def negotiate(card_url, item, budget, started, ratio=None):
     """Week-06 buyer loop with two more guards. Returns (task, asks, offers): every ask the shop made and
     every price we sent, oldest first."""
     card = httpx.get(card_url.rstrip("/") + "/.well-known/agent-card.json", headers=HEADERS, timeout=10).json()
@@ -214,6 +218,11 @@ def negotiate(card_url, item, budget, started):
     task = send(url, f"I want to buy a {item}")
     task_id = task["id"]
     history = [f"buyer: I want to buy a {item}", f"seller: {status_text(task)}"]
+    first_max = FIRST_OFFER_MAX
+    if ratio is not None:
+        # my memory of this shop: where its deals with me usually ended, as a share of its first ask
+        history.insert(0, f"(my memory: this shop usually settles at {ratio:.0%} of its first ask)")
+        first_max = min(FIRST_OFFER_MAX, max(0.5, ratio - 0.1))
     asks, offers, notes, last_offer, low_offers = [], [], [], None, 0
 
     for _ in range(MAX_OFFERS):
@@ -238,9 +247,9 @@ def negotiate(card_url, item, budget, started):
             action, price = "offer", budget
         if action == "offer":
             # week-07 guards: do not give the budget away early
-            if last_offer is None and price > FIRST_OFFER_MAX * ask_price:
-                cap = int(FIRST_OFFER_MAX * ask_price)
-                log(f"   GUARD first offer {price} > {FIRST_OFFER_MAX:.0%} of ask {ask_price}: lowered to {cap}")
+            if last_offer is None and price > first_max * ask_price:
+                cap = int(first_max * ask_price)
+                log(f"   GUARD first offer {price} > {first_max:.0%} of ask {ask_price}: lowered to {cap}")
                 price = cap
             elif last_offer is not None and price > last_offer + max(5, (ask_price - last_offer) // 2):
                 cap = last_offer + max(5, (ask_price - last_offer) // 2)
@@ -394,13 +403,14 @@ def main():
     started = time.time()
 
     shops = json.loads(Path(a.shops).read_text(encoding="utf-8"))
-    memory = load_memory()
-    shop, reason = choose(shops, a.item, a.budget, memory)
+    prof = buyer_memory.load()       # compact per-shop profiles, updated with only the new memory lines
+    shop, reason = choose(shops, a.item, a.budget, prof)
     log(f"[choose] {shop['name']} {shop['url']}: {reason}")
 
     task, asks, offers, texts, notes, rec, problem = None, [], [], [], [], None, None
     try:
-        task, asks, offers, texts, notes = negotiate(shop["url"], a.item, a.budget, started)
+        task, asks, offers, texts, notes = negotiate(shop["url"], a.item, a.budget, started,
+                                                     buyer_memory.settle_ratio(prof.get(shop["name"])))
         outcome = "deal" if state(task) == "TASK_STATE_COMPLETED" else "no deal"
     except Exception as e:
         log(f"buyer error: {type(e).__name__}: {e}")
