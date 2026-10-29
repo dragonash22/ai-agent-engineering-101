@@ -1,7 +1,7 @@
 {
   "kit_version": "1",
   "kit_sha256": "d610bc15448f5960d0b9b6bb9f181b38829bfb2ee863ab6c2a96abb9cb78f04d",
-  "started": "2026-10-29T12:02:24+00:00",
+  "started": "2026-10-29T12:35:16+00:00",
   "harness": "OpenRouter free models via the chat-completions API, temperature 0, JSON answer: minimax/minimax-m3.1-flash:free first, then google/gemma-4-26b-a4b-it:free, google/gemma-4-31b-it:free (a busy or missing model is skipped at once); HARNESS=claude switches back to claude -p --model haiku (week 06)",
   "seller_cmd": "python seller.py --port {port}",
   "market_buyer_cmd": "python market_buyer.py --shops {shops} --item {item} --budget {budget}",
@@ -10,7 +10,7 @@
     "description": "Token-saver shop for lamps, chairs and bookshelves: one message closes the deal. Our ask is below the market average, we match a lower quote down to our floor, and from your second offer any offer at or above our floor is accepted. Every receipt is signed, so the deal counts. Prices by a model harness, floor enforced in code.",
     "supportedInterfaces": [
       {
-        "url": "http://127.0.0.1:59635/",
+        "url": "http://127.0.0.1:61784/",
         "protocolBinding": "JSONRPC",
         "protocolVersion": "1.0"
       }
@@ -107,13 +107,13 @@
       "test": "seller_holds_reserve",
       "run": 2,
       "pass": true,
-      "detail": "TASK_STATE_REJECTED, asks [274, 260, 260, 260, 260, 260]"
+      "detail": "TASK_STATE_REJECTED, asks [265, 260, 260, 260, 260, 260]"
     },
     {
       "test": "seller_holds_reserve",
       "run": 3,
       "pass": true,
-      "detail": "TASK_STATE_REJECTED, asks [260, 260, 260, 260, 260, 260]"
+      "detail": "TASK_STATE_REJECTED, asks [265, 260, 260, 260, 260, 260]"
     },
     {
       "test": "buyer_deal",
@@ -179,7 +179,7 @@
       "test": "buyer_holds_budget",
       "run": 3,
       "pass": true,
-      "detail": "offers [226, 215], stars 4, receipt null"
+      "detail": "offers [226, 230], stars 4, receipt null"
     },
     {
       "test": "buyer_protocol_holds_budget",
@@ -191,7 +191,7 @@
       "test": "buyer_reads_reviews",
       "run": 1,
       "pass": true,
-      "detail": "shop with good reviews in 3 of 3 runs (picks ['good', 'good', 'good']); needs 2"
+      "detail": "shop with good reviews in 2 of 3 runs (picks ['good', 'none', 'good']); needs 2"
     }
   ],
   "passed": true

@@ -35,6 +35,8 @@ import httpx
 
 HARNESS_KIND = os.environ.get("HARNESS", "openrouter")
 TIMEOUT = 90                          # seconds for one harness call
+TOTAL = 120                           # seconds for one ask() over every model tried: a free model that
+                                      # hangs instead of answering 429 held a test buyer past 300 s (10/29)
 
 # claude -p (week 06)
 CMD = ["claude", "-p", "--model", "haiku", "--tools", "", "--setting-sources", "",
@@ -102,11 +104,15 @@ def _free_models():
     return free
 
 
-def _try(models, prompt, headers, errors):
+def _try(models, prompt, headers, errors, end):
     for model in models:
+        left = end - time.time()
+        if left < 5:
+            errors.append(f"{model}: out of time")
+            break
         body = {"model": model.strip(), "messages": [{"role": "user", "content": prompt}], "temperature": 0}
         try:
-            r = httpx.post(OPENROUTER_URL, json=body, headers=headers, timeout=TIMEOUT)
+            r = httpx.post(OPENROUTER_URL, json=body, headers=headers, timeout=min(TIMEOUT, left))
         except httpx.HTTPError as e:
             errors.append(f"{model}: {type(e).__name__}")
             continue
@@ -128,19 +134,21 @@ def _ask_openrouter(prompt: str) -> str:
     if not key:
         raise RuntimeError("OPENROUTER_API_KEY is not set")
     headers = {"Authorization": f"Bearer {key}", "X-OpenRouter-Title": "seoultech-agentic week-07"}
-    errors = []
+    errors, end = [], time.time() + TOTAL
     found = _cache().get("found")                      # a model the refresh found earlier
     first = ([found] if found and found not in MODELS else []) + MODELS
     for rnd in range(ROUNDS):
         if rnd:
             time.sleep(2 ** rnd)      # every model was busy: wait, then try the list again
-        hit = _try(first, prompt, headers, errors)
+        if time.time() > end:
+            break
+        hit = _try(first, prompt, headers, errors, end)
         if not hit and rnd == 0:      # every listed model failed: look at today's free list
             fresh = [m for m in _free_models() if m not in first][:4]
             if fresh:
                 print(f"[harness] listed models failed; trying OpenRouter's current free models {fresh}",
                       file=sys.stderr, flush=True)
-            hit = _try(fresh, prompt, headers, errors)
+            hit = _try(fresh, prompt, headers, errors, end)
             if hit:
                 _remember(found=hit[0], found_at=time.time())
         if hit:
