@@ -36,7 +36,10 @@ SCHEMA = 2                 # bump when the profile layout changes: the next load
 RATIOS = 20                # recent settle ratios kept per shop
 LOWS = 200                 # recent agreed prices kept per item, across all shops
 DEFAULTS = {"window": 50, "cooldown_h": 24, "repeat_days": 7, "minor_to_medium": 3, "prior_defect": 0.05,
-            "prior_weight": 10}
+            "prior_weight": 10,
+            # haggling: the first offer is at most first_offer_max x the ask; each later offer closes at most
+            # concede of the gap to the ask; after take_after low offers on an affordable ask, take the ask
+            "first_offer_max": 0.70, "concede": 0.5, "take_after": 3}
 
 
 def theta():
@@ -45,6 +48,20 @@ def theta():
         return {**DEFAULTS, **json.loads(THETA.read_text(encoding="utf-8")).get("buyer", {})}
     except (OSError, ValueError):
         return dict(DEFAULTS)
+
+
+def profile():
+    """The theta profile as one block of text for the front of every prompt: the version and the rules the
+    meta-harness wrote. It changes only when the meta-harness writes a new version, so between versions
+    every prompt starts with the same text (the provider's prompt cache stays warm)."""
+    try:
+        t = json.loads(THETA.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    rules = t.get("rules") or []
+    if not rules:
+        return ""
+    return f"[buyer profile v{t.get('version', 0)}]\n" + "\n".join(f"- {r}" for r in rules) + "\n\n"
 
 
 def severity(problem):

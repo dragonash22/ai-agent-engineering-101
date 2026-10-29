@@ -44,13 +44,14 @@ from pathlib import Path
 
 import httpx
 
-from buyer import HEADERS, LOW_OFFERS_BEFORE_TAKING, MAX_OFFERS, TIME_LIMIT, decide, log, rpc, send, \
+import buyer
+from buyer import HEADERS, MAX_OFFERS, TIME_LIMIT, decide, log, rpc, send, \
     state, status_text
 from harness import ask
 import buyer_memory
 
 MEMORY = Path(os.environ.get("MARKET_BUYER_MEMORY", Path(__file__).parent / "memory.jsonl"))   # tests use another file
-FIRST_OFFER_MAX = 0.70        # first offer at most 70% of the opening ask
+T = buyer_memory.theta()      # the tunable numbers; the meta-harness (meta_harness.py) writes them to theta.json
 FLOOR = {"lamp": 100, "chair": 180, "bookshelf": 260}   # every shop's reserve (week 06); an ask above
 ABSURD = 2.0                                            # ABSURD x floor is not a real price
 BAD_WORDS = re.compile(r"receipt (said|says)|overcharg|higher than (the price )?(we )?agreed|did not answer|scam|fake",
@@ -223,11 +224,11 @@ def negotiate(card_url, item, budget, started, ratio=None, low=None):
     task = send(url, f"I want to buy a {item}")
     task_id = task["id"]
     history = [f"buyer: I want to buy a {item}", f"seller: {status_text(task)}"]
-    first_max = FIRST_OFFER_MAX
+    first_max = T["first_offer_max"]
     if ratio is not None:
         # my memory of this shop: where its deals with me usually ended, as a share of its first ask
         history.insert(0, f"(my memory: this shop usually settles at {ratio:.0%} of its first ask)")
-        first_max = min(FIRST_OFFER_MAX, max(0.5, ratio - 0.1))
+        first_max = min(T["first_offer_max"], max(0.5, ratio - 0.1))
     asks, offers, notes, last_offer, low_offers = [], [], [], None, 0
 
     for _ in range(MAX_OFFERS):
@@ -273,9 +274,9 @@ def negotiate(card_url, item, budget, started, ratio=None, low=None):
                 cap = int(first_max * ask_price)
                 log(f"   GUARD first offer {price} > {first_max:.0%} of ask {ask_price}: lowered to {cap}")
                 price = cap
-            elif last_offer is not None and price > last_offer + max(5, (ask_price - last_offer) // 2):
-                cap = last_offer + max(5, (ask_price - last_offer) // 2)
-                log(f"   GUARD offer {price} jumps more than half the gap from {last_offer} to {ask_price}: {cap}")
+            elif last_offer is not None and price > last_offer + max(5, int((ask_price - last_offer) * T["concede"])):
+                cap = last_offer + max(5, int((ask_price - last_offer) * T["concede"]))
+                log(f"   GUARD offer {price} closes more than {T['concede']:.0%} of the gap from {last_offer} to {ask_price}: {cap}")
                 price = cap
             if price > budget:
                 log(f"   GUARD offer {price} > budget {budget}: lowered to {budget}")
@@ -288,7 +289,7 @@ def negotiate(card_url, item, budget, started, ratio=None, low=None):
                 action = "walk_away"
         if action == "offer" and ask_price <= budget:
             low_offers += 1
-            if low_offers > LOW_OFFERS_BEFORE_TAKING:
+            if low_offers > T["take_after"]:
                 log(f"   GUARD {low_offers - 1} low offers already while ask {ask_price} is affordable: taking it")
                 action, price = "accept", ask_price
         if action not in ("accept", "offer", "walk_away"):
@@ -425,6 +426,11 @@ def main():
     started = time.time()
 
     shops = json.loads(Path(a.shops).read_text(encoding="utf-8"))
+    head = buyer_memory.profile()    # the theta profile goes first in every prompt (braces escaped for .format)
+    if head:
+        buyer.TURN_PROMPT = head.replace("{", "{{").replace("}", "}}") + buyer.TURN_PROMPT
+        global CHOOSE_PROMPT
+        CHOOSE_PROMPT = head.replace("{", "{{").replace("}", "}}") + CHOOSE_PROMPT
     mem = buyer_memory.load(full=True)     # compact per-shop profiles, updated with only the new memory lines
     prof = mem["profiles"]
     shop, reason = choose(shops, a.item, a.budget, prof)
