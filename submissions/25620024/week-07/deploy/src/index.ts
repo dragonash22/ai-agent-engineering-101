@@ -38,7 +38,7 @@ const MATCH = /match|elsewhere|other shop|quoted|cheaper|found it|lower price/i;
 // a counter gives up at least half the gap between our ask and the offer; the model may not end the talk
 // before MAX_ROUNDS (a "reject" becomes a counter).
 const FAST_CLOSE_FROM = 2;
-const SHOP_CODE = "deal-msg-1";
+const SHOP_CODE = "acp-1";
 // challenge 1, sixth change (21:31): the deal message says how many offers it took, in words, so a buyer's
 // review can repeat the fact ("closed in one offer"); words, not digits, so the price stays the only number.
 const WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
@@ -62,6 +62,43 @@ export async function signedReceipt(key: CryptoKey | null, item: string, price: 
   const sig = new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, key, new TextEncoder().encode(canon(r))));
   return { ...r, sig_seller: btoa(String.fromCharCode(...sig)) };
 }
+// --- week 8: ACP checkout (Agentic Commerce Protocol 2026-04-17, the checkout subset), the same as kit v3's
+// AcpShop. A buyer brings the receipt this shop signed over A2A; the shop answers with a checkout session whose
+// checkout_jwt (EdDSA, canonical JSON) it signs with SHOP_KEY. Completing the session forwards the buyer's
+// closed AP2 mandates to the market's /api/settle, which moves the credits. Kit-less deployed shops must serve
+// this themselves (week-08 notes, SETUP table).
+
+export function canonAny(v: any): string {
+  // Python json.dumps(v, sort_keys=True, separators=(",", ":"), ensure_ascii=False) for JSON values
+  if (v === null || typeof v !== "object") return JSON.stringify(v);
+  if (Array.isArray(v)) return "[" + v.map(canonAny).join(",") + "]";
+  return "{" + Object.keys(v).sort().map((k) => JSON.stringify(k) + ":" + canonAny(v[k])).join(",") + "}";
+}
+
+const b64url = (bytes: Uint8Array) =>
+  btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const utf8 = (s: string) => new TextEncoder().encode(s);
+
+export async function jwtSign(key: CryptoKey, payload: any): Promise<string> {
+  const head = b64url(utf8(canonAny({ alg: "EdDSA", typ: "JWT" }))) + "." + b64url(utf8(canonAny(payload)));
+  const sig = new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, key, utf8(head)));
+  return head + "." + b64url(sig);
+}
+
+export function acpCard(origin: string) {
+  const tools: [string, string, string, any][] = [
+    ["create_checkout_session", "POST", "/checkout_sessions",
+      { line_items: "[{id: item, quantity: 1}]", receipt: "the receipt the shop signed over A2A" }],
+    ["get_checkout_session", "GET", "/checkout_sessions/{id}", {}],
+    ["complete_checkout_session", "POST", "/checkout_sessions/{id}/complete",
+      { payment_data: "{order, checkout_mandate, payment_mandate}" }],
+    ["cancel_checkout_session", "POST", "/checkout_sessions/{id}/cancel", {}],
+  ];
+  return { protocol: "acp", version: "2026-04-17", endpoint: `${origin}/acp`,
+    capabilities: { services: ["checkout"], payment_methods: ["ap2-mandate"] },
+    tools: tools.map(([name, method, path, input]) => ({ name, method, path, input })) };
+}
+
 const TERMINAL = ["TASK_STATE_COMPLETED", "TASK_STATE_REJECTED", "TASK_STATE_CANCELED", "TASK_STATE_FAILED"];
 
 const OPEN_PROMPT = (item: string, reserve: number) =>
@@ -118,6 +155,11 @@ export default {
   async fetch(request: Request, env: any): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/.well-known/agent-card.json") return json(card(url.origin));
+    if (request.method === "GET" && url.pathname === "/.well-known/acp.json") return json(acpCard(url.origin));
+    if (url.pathname.startsWith("/acp/")) {
+      const shop = env.SHOP.get(env.SHOP.idFromName("shop-" + SHOP_CODE));
+      return shop.fetch(request);
+    }
     if (request.method === "POST" && url.pathname === "/") {
       // The Durable Object kept answering with the code of an older deploy while buyers kept it busy (the
       // 21:01 and 21:16 deploys did not show up in its replies), so each code change gets a fresh object.
@@ -174,6 +216,8 @@ export class Shop {
   }
 
   async fetch(request: Request): Promise<Response> {
+    const path = new URL(request.url).pathname;
+    if (path.startsWith("/acp/")) return this.acp(request, path);
     let body: any;
     try { body = await request.json(); } catch { return json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }); }
     const id = body?.id ?? null;
@@ -199,6 +243,77 @@ export class Shop {
     } catch (e: any) {
       return err(-32603, `Internal error: ${e?.message ?? e}`);
     }
+  }
+
+  async acp(request: Request, path: string): Promise<Response> {
+    const origin = new URL(request.url).origin;
+    let b: any = {};
+    if (request.method === "POST") {
+      try { b = await request.json(); } catch { return json({ error: "body is not JSON" }, 400); }
+    }
+    const parts = path.split("/").filter(Boolean).slice(1);          // checkout_sessions[/id[/complete|cancel]]
+    if (parts[0] !== "checkout_sessions") return json({ error: "unknown ACP path" }, 404);
+    if (parts.length === 1 && request.method === "POST") return this.acpCreate(b, origin);
+    const s: any = parts[1] ? await this.state.storage.get(`acp:${parts[1]}`) : undefined;
+    if (!s) return json({ error: "no such checkout session" }, 404);
+    if (parts.length === 2) return json(s);
+    if (parts[2] === "cancel" && s.status !== "completed") {
+      s.status = "canceled";
+      await this.state.storage.put(`acp:${s.id}`, s);
+      return json(s);
+    }
+    if (parts[2] === "complete" && s.status === "ready_for_payment") {
+      const pay = b.payment_data ?? {};
+      let r: Response, res: any;
+      try {
+        r = await fetch(MARKET + "/api/settle", { method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ order: pay.order, checkout_jwt: s.checkout_jwt,
+            checkout_mandate: pay.checkout_mandate, payment_mandate: pay.payment_mandate }),
+          signal: AbortSignal.timeout(20000) });
+        res = await r.json().catch(() => ({ error: "market answered without JSON" }));
+      } catch (e: any) {
+        return json({ error: `market unreachable: ${e?.message}` }, 502);
+      }
+      if (r.status !== 200 || !res?.settled) {
+        const failed = Object.entries(res?.checks ?? {}).filter(([, v]) => !v).map(([k]) => k);
+        console.log(`[acp] settle refused ${s.line_items[0].id} at ${s.totals[0].amount}: ${failed.join(",") || JSON.stringify(res).slice(0, 200)}`);
+        return json({ error: "payment refused by the market", market: res }, 402);
+      }
+      s.status = "completed";
+      s.order = { status: "confirmed", mandate_receipt: res.mandate_receipt };
+      await this.state.storage.put(`acp:${s.id}`, s);
+      console.log(`[acp] settled ${s.line_items[0].id} at ${s.totals[0].amount}, ledger #${res.ledger}`);
+      return json(s);
+    }
+    return json({ error: `session is ${s.status}` }, 409);
+  }
+
+  async acpCreate(b: any, origin: string): Promise<Response> {
+    const rec = b?.receipt && typeof b.receipt === "object" ? b.receipt : {};
+    const items = Array.isArray(b?.line_items) && b.line_items.length ? b.line_items : [{}];
+    const key = await this.shopKey();
+    if (!key) return json({ error: "this shop has no signing key" }, 503);
+    // our receipts are deterministic Ed25519 signatures, so signing the same four fields again must give the
+    // same sig_seller; that proves the receipt came from this shop and was not changed
+    const mine = Number.isInteger(rec.price) && rec.shop === SHOP
+      ? await signedReceipt(key, String(rec.item), rec.price, String(rec.task)) : null;
+    if (!rec.sig_seller || !mine || (mine as any).sig_seller !== rec.sig_seller) {
+      return json({ error: "the receipt is not signed by this shop" }, 400);
+    }
+    if (items[0]?.id !== rec.item) return json({ error: "line_items do not match the receipt" }, 400);
+    if (await this.state.storage.get(`acptask:${rec.task}`)) {
+      return json({ error: "this receipt already has a checkout session" }, 409);
+    }
+    const sid = "cs_" + [...crypto.getRandomValues(new Uint8Array(8))].map((x) => x.toString(16).padStart(2, "0")).join("");
+    const co = { id: sid, shop: rec.shop, shop_url: origin, item: rec.item, price: rec.price,
+      task: rec.task, currency: "credits", iat: Math.floor(Date.now() / 1000) };
+    const s = { id: sid, status: "ready_for_payment", task: rec.task,
+      line_items: [{ id: rec.item, quantity: 1 }], totals: [{ type: "total", amount: rec.price }],
+      capabilities: { payment_methods: ["ap2-mandate"] }, checkout_jwt: await jwtSign(key, co) };
+    await this.state.storage.put(`acp:${sid}`, s);
+    await this.state.storage.put(`acptask:${rec.task}`, sid);
+    console.log(`[acp] checkout ${sid} for ${rec.item} at ${rec.price}`);
+    return json(s, 201);
   }
 
   async sendMessage(p: any, ok: (r: unknown) => Response, err: (c: number, m: string) => Response) {
