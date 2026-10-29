@@ -38,7 +38,7 @@ const MATCH = /match|elsewhere|other shop|quoted|cheaper|found it|lower price/i;
 // a counter gives up at least half the gap between our ask and the offer; the model may not end the talk
 // before MAX_ROUNDS (a "reject" becomes a counter).
 const FAST_CLOSE_FROM = 2;
-const SHOP_CODE = "acp-2";
+const SHOP_CODE = "mem-1";
 // challenge 1, sixth change (21:31): the deal message says how many offers it took, in words, so a buyer's
 // review can repeat the fact ("closed in one offer"); words, not digits, so the price stays the only number.
 const WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
@@ -283,10 +283,45 @@ export class Shop {
       s.status = "completed";
       s.order = { status: "confirmed", mandate_receipt: res.mandate_receipt };
       await this.state.storage.put(`acp:${s.id}`, s);
+      try { await this.remember(s, pay.order, res.ledger); } catch (e: any) { console.log(`[memory] not saved: ${e?.message}`); }
       console.log(`[acp] settled ${s.line_items[0].id} at ${s.totals[0].amount}, ledger #${res.ledger}`);
       return json(s);
     }
     return json({ error: `session is ${s.status}` }, 409);
+  }
+
+  // --- week 8: the shop's memory. A2A messages do not say who the buyer is, but a settled checkout does:
+  // the market's ledger line for the settlement names the buyer of the order. After every settlement the
+  // shop keeps a compact customer profile (cust:<buyer>) and per-item numbers (stats:<item>) in the Durable
+  // Object; the raw evidence stays in the ledger and in the acp:/task: records.
+  async remember(s: any, order: string, ledgerSeq: number) {
+    const item = s.line_items[0].id, price = s.totals[0].amount;
+    let buyer = "unknown";
+    try {
+      const rows: any[] = await (await fetch(`${MARKET}/api/ledger?after=${ledgerSeq - 1}`,
+        { signal: AbortSignal.timeout(5000) })).json();
+      buyer = rows.find((e) => e.seq === ledgerSeq)?.data?.buyer ?? rows.find((e) => e.data?.order === order)?.data?.buyer ?? "unknown";
+    } catch { /* the market is busy: keep the deal under "unknown" */ }
+    const t: any = await this.state.storage.get(`task:${s.task}`);
+    const rounds = t?.deal?.rounds ?? null;
+    const opened = Number((String(t?.deal?.history?.[1] ?? "").match(/asking (\d+)/) ?? [])[1]) || null;
+    const now = Date.now();
+
+    const c: any = (await this.state.storage.get(`cust:${buyer}`)) ??
+      { buyer, deals: 0, spent: 0, items: {}, rounds: [0, 0], first: now, last: now, orders: [] };
+    c.deals += 1; c.spent += price; c.items[item] = (c.items[item] ?? 0) + 1; c.last = now;
+    if (rounds !== null) c.rounds = [c.rounds[0] + rounds, c.rounds[1] + 1];
+    c.orders = [...c.orders, { order, item, price, rounds, ledger: ledgerSeq, ts: now }].slice(-5);
+    await this.state.storage.put(`cust:${buyer}`, c);
+
+    const st: any = (await this.state.storage.get(`stats:${item}`)) ??
+      { item, settled: 0, sum: 0, rounds: [0, 0], discount: [0, 0], buyers: 0 };
+    st.settled += 1; st.sum += price;
+    if (rounds !== null) st.rounds = [st.rounds[0] + rounds, st.rounds[1] + 1];
+    if (opened) st.discount = [st.discount[0] + (opened - price) / opened, st.discount[1] + 1];
+    if (c.deals === 1) st.buyers += 1;
+    await this.state.storage.put(`stats:${item}`, st);
+    console.log(`[memory] ${buyer}: deal ${c.deals}, spent ${c.spent} | ${item}: settled ${st.settled}, avg ${(st.sum / st.settled).toFixed(1)}`);
   }
 
   async acpCreate(b: any, origin: string): Promise<Response> {
