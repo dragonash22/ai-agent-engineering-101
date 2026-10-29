@@ -38,7 +38,7 @@ const MATCH = /match|elsewhere|other shop|quoted|cheaper|found it|lower price/i;
 // a counter gives up at least half the gap between our ask and the offer; the model may not end the talk
 // before MAX_ROUNDS (a "reject" becomes a counter).
 const FAST_CLOSE_FROM = 2;
-const SHOP_CODE = "acp-1";
+const SHOP_CODE = "acp-2";
 // challenge 1, sixth change (21:31): the deal message says how many offers it took, in words, so a buyer's
 // review can repeat the fact ("closed in one offer"); words, not digits, so the price stays the only number.
 const WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
@@ -249,7 +249,8 @@ export class Shop {
     const origin = new URL(request.url).origin;
     let b: any = {};
     if (request.method === "POST") {
-      try { b = await request.json(); } catch { return json({ error: "body is not JSON" }, 400); }
+      const text = await request.text();               // an empty body is {} (cancel and complete may send none)
+      try { b = text.trim() ? JSON.parse(text) : {}; } catch { return json({ error: "body is not JSON" }, 400); }
     }
     const parts = path.split("/").filter(Boolean).slice(1);          // checkout_sessions[/id[/complete|cancel]]
     if (parts[0] !== "checkout_sessions") return json({ error: "unknown ACP path" }, 404);
