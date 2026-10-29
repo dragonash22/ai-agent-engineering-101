@@ -256,14 +256,19 @@ def negotiate(card_url, item, budget, started, ratio=None, low=None):
         if action == "accept" and ask_price > budget:
             log(f"   GUARD accept at {ask_price} > budget {budget}: offering {budget} instead")
             action, price = "offer", budget
-        if action == "accept" and last_offer is None and low and low < ask_price:
+        anchor = low if low and low < ask_price and low <= budget else None   # a low above budget is no use
+        if action == "walk_away" and last_offer is None and len(asks) == 1:
+            # one offer before leaving, even when the harness is down (all free models 429 on 10/29)
+            action, price = "offer", anchor or min(budget, int(first_max * ask_price))
+            log(f"   GUARD no offer made yet: offering {price} before walking away")
+        if action == "accept" and last_offer is None and anchor:
             action = "offer"             # never take a first ask above the market low without trying it
         if action == "offer":
             # week-07 guards: do not give the budget away early
-            if last_offer is None and low and low < ask_price:
-                if price != low:
-                    log(f"   GUARD first offer {price}: offering the market low {low} instead")
-                price = low
+            if last_offer is None and anchor:
+                if price != anchor:
+                    log(f"   GUARD first offer {price}: offering the market low {anchor} instead")
+                price = anchor
             elif last_offer is None and price > first_max * ask_price:
                 cap = int(first_max * ask_price)
                 log(f"   GUARD first offer {price} > {first_max:.0%} of ask {ask_price}: lowered to {cap}")
@@ -420,8 +425,8 @@ def main():
     started = time.time()
 
     shops = json.loads(Path(a.shops).read_text(encoding="utf-8"))
-    state = buyer_memory.load(full=True)   # compact per-shop profiles, updated with only the new memory lines
-    prof = state["profiles"]
+    mem = buyer_memory.load(full=True)     # compact per-shop profiles, updated with only the new memory lines
+    prof = mem["profiles"]
     shop, reason = choose(shops, a.item, a.budget, prof)
     log(f"[choose] {shop['name']} {shop['url']}: {reason}")
 
@@ -429,7 +434,7 @@ def main():
     try:
         task, asks, offers, texts, notes = negotiate(shop["url"], a.item, a.budget, started,
                                                      buyer_memory.settle_ratio(prof.get(shop["name"])),
-                                                     buyer_memory.market_low(state, a.item))
+                                                     buyer_memory.market_low(mem, a.item))
         outcome = "deal" if state(task) == "TASK_STATE_COMPLETED" else "no deal"
     except Exception as e:
         log(f"buyer error: {type(e).__name__}: {e}")
